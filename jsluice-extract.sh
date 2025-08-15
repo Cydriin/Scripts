@@ -247,7 +247,7 @@ json_only < "$RAW_STRINGS" \
   | jq -s '
     group_by(.filename)
     | map({
-        file: (.[0].filename | split("/")[-1]),
+        file: .[0].filename,
         total: length,
         unique: (map(.str) | unique | length),
         interesting: (
