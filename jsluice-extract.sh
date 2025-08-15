@@ -242,7 +242,7 @@ json_only < "$RAW_STRINGS" \
     | sort_by(.shared_strings_count)
   ' > "$OUTPUT_DIR/strings-shared-in-files.json" || true
 
-# 4) Consolidated “interesting” view (requires slurp)
+# Consolidated “interesting” view (requires slurp)
 json_only < "$RAW_STRINGS" \
   | jq -s '
     group_by(.filename)
@@ -261,22 +261,15 @@ json_only < "$RAW_STRINGS" \
     | sort_by(.unique)
   ' > "$OUTPUT_DIR/strings-interesting.json" || true
 
-
 ### Wordlists ###
-# (8) Broader endpoints (api/graphql/oauth/rest + versioned), streaming
+# endpoints (api/graphql/oauth/rest + versioned), streaming
 json_only < "$RAW_STRINGS" | jq -r '.str? // empty' \
   | grep -E '^(https?://|/)(api(/|$)|v[0-9]+/|graphql|oauth|rest)([^[:space:]]*)$' \
   | sort -u > "$WORDLIST_DIR/endpoints.txt" || true
 
-# (4) Stronger high-entropy detection with entropy gate (streaming)
+# entropy
 json_only < "$RAW_STRINGS" | jq -r '.str? // empty' \
-  | awk '
-    function H(s,   n,i,ch,cnt,h){ n=length(s); if(n==0) return 0;
-      split("",cnt); for(i=1;i<=n;i++){ ch=substr(s,i,1); cnt[ch]++ }
-      for (ch in cnt){ p=cnt[ch]/n; h+=-(p*log(p)/log(2)) } return h
-    }
-    /^[A-Za-z0-9._~-]{24,}$/ { if (H($0) >= 3.5) print $0 }
-  ' | sort -u > "$WORDLIST_DIR/high-entropy.txt" || true
+  | grep -E '^[a-zA-Z0-9_-]{32,}$' | sort -u > "$WORDLIST_DIR/high-entropy.txt" || true
 
 # Emails & paths remain streaming
 json_only < "$RAW_STRINGS" | jq -r '.str? // empty' \
