@@ -258,7 +258,7 @@ json_only < "$RAW_STRINGS" \
         )
       })
     | map(select((.interesting | length) > 0))
-    | sort_by(.unique)
+    | sort_by(.interesting_strings)
   ' > "$OUTPUT_DIR/strings-interesting.json" || true
 
 ### Wordlists ###
