@@ -5,7 +5,7 @@ OUTPUT_DIR="jsluice-output"
 WORDLIST_DIR="$OUTPUT_DIR/wordlists"
 RAW_DIR="$OUTPUT_DIR/raw"
 FORCE_REEXTRACT=0
-USE_COLOR=1
+USE_COLOR=1   # will auto-disable if stdout not a TTY
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -26,6 +26,20 @@ while [[ $# -gt 0 ]]; do
       JS_DIR="$1"; shift ;;
   esac
 done
+
+# -------------------------
+# Dependency guard (10)
+# -------------------------
+need() { command -v "$1" >/dev/null 2>&1 || { echo "Missing dependency: $1" >&2; exit 1; }; }
+need jq
+need jsluice
+
+# -------------------------
+# Default color detection (TTY)
+# -------------------------
+if [[ ! -t 1 && "$USE_COLOR" -eq 1 ]]; then
+  USE_COLOR=0
+fi
 
 # -------------------------
 # Colors
@@ -144,24 +158,43 @@ done
 # PROCESSING
 # -------------------------
 echo -e "${YELLOW}[*] Processing URLs...${NC}"
-json_only < "$RAW_URLS" \
-  | jq -s -r 'map(.url) | unique | sort | .[]' > "$WORDLIST_DIR/urls.txt" || true
-json_only < "$RAW_URLS" \
-  | jq -s -r 'map(.queryParams // [], .bodyParams // []) | flatten | unique | sort | .[]' > "$WORDLIST_DIR/params.txt" || true
-json_only < "$RAW_URLS" \
-  | jq -s -r 'group_by(.filename) | map({filename: .[0].filename, urls: (map(.url) | unique | sort)})' > "$OUTPUT_DIR/urls-by-file.json" || true
-json_only < "$RAW_URLS" \
-  | jq -s -r 'group_by(.type) | map({type: .[0].type, count: length, files: (map(.filename) | unique | sort), urls: (map(.url) | unique | sort)}) | sort_by(.count) | reverse' > "$OUTPUT_DIR/urls-by-type.json" || true
 
+# (3) Streamed unique URL list (avoid -s)
+json_only < "$RAW_URLS" \
+  | jq -r '.url? // empty' \
+  | sort -u > "$WORDLIST_DIR/urls.txt" || true
+
+# (3) Streamed params: collect query & body params (avoid -s)
+json_only < "$RAW_URLS" \
+  | jq -r '.queryParams[]?, .bodyParams[]? // empty' \
+  | sed '/^$/d' | sort -u > "$WORDLIST_DIR/params.txt" || true
+
+
+json_only < "$RAW_URLS" \
+  | jq -s '
+    group_by(.filename)
+    | map({
+        filename: .[0].filename,
+        types: (map(.type) |unique | sort),
+        urls: (map(.url) | unique | sort)
+      })
+    | map(. + {count: (.urls | length)})
+    | sort_by(.count)
+    | map(del(.count))
+  ' > "$OUTPUT_DIR/urls-by-file.json" || true
+
+
+json_only < "$RAW_URLS" \
+  | jq -s 'group_by(.type) | map({type: .[0].type, count: (map(.url) | unique | length),files: map(.filename)|unique|sort,urls: map(.url)|unique|sort}) | sort_by(.count)' > "$OUTPUT_DIR/urls-by-type.json" || true
 
 ### Strings ###
 echo -e "${YELLOW}[*] Processing strings...${NC}"
 
-# 1) Flat wordlist of all unique strings
+# 1) Flat wordlist of all unique strings (already streaming)
 json_only < "$RAW_STRINGS" \
   | jq -r '.str? // empty' | sed '/^$/d' | sort -u > "$WORDLIST_DIR/strings-all.txt" || true
 
-# 2) Per-file breakdown (ascending by unique_strings_count)
+# 2) Per-file breakdown (requires slurp)
 json_only < "$RAW_STRINGS" \
   | jq -s '
     group_by(.filename) 
@@ -178,17 +211,14 @@ json_only < "$RAW_STRINGS" \
     | sort_by(.unique_strings_count)
   ' > "$OUTPUT_DIR/strings-unique-to-file.json" || true
 
-# 3) Strings found in multiple files — per-file format (ascending by shared_count)
+# 3) Strings found in multiple files — per-file (requires slurp)
 json_only < "$RAW_STRINGS" \
   | jq -s '
-    # Build the set of strings that appear in >1 file (globally shared)
     ( group_by(.str)
       | map(select((map(.filename) | unique | length) > 1))
       | map(.[0].str)
       | unique
     ) as $shared_set
-
-    # Per-file view in requested order
     |
     group_by(.filename)
     | map(
@@ -212,7 +242,7 @@ json_only < "$RAW_STRINGS" \
     | sort_by(.shared_strings_count)
   ' > "$OUTPUT_DIR/strings-shared-in-files.json" || true
 
-# 4) Consolidated “interesting” view
+# 4) Consolidated “interesting” view (requires slurp)
 json_only < "$RAW_STRINGS" \
   | jq -s '
     group_by(.filename)
@@ -233,22 +263,50 @@ json_only < "$RAW_STRINGS" \
 
 
 ### Wordlists ###
+# (8) Broader endpoints (api/graphql/oauth/rest + versioned), streaming
 json_only < "$RAW_STRINGS" | jq -r '.str? // empty' \
-  | grep -E '^https?://|^/api/|^/v[0-9]' | sort -u > "$WORDLIST_DIR/endpoints.txt" || true
+  | grep -E '^(https?://|/)(api(/|$)|v[0-9]+/|graphql|oauth|rest)([^[:space:]]*)$' \
+  | sort -u > "$WORDLIST_DIR/endpoints.txt" || true
+
+# (4) Stronger high-entropy detection with entropy gate (streaming)
 json_only < "$RAW_STRINGS" | jq -r '.str? // empty' \
-  | grep -E '^[a-zA-Z0-9_-]{32,}$' | sort -u > "$WORDLIST_DIR/high-entropy.txt" || true
+  | awk '
+    function H(s,   n,i,ch,cnt,h){ n=length(s); if(n==0) return 0;
+      split("",cnt); for(i=1;i<=n;i++){ ch=substr(s,i,1); cnt[ch]++ }
+      for (ch in cnt){ p=cnt[ch]/n; h+=-(p*log(p)/log(2)) } return h
+    }
+    /^[A-Za-z0-9._~-]{24,}$/ { if (H($0) >= 3.5) print $0 }
+  ' | sort -u > "$WORDLIST_DIR/high-entropy.txt" || true
+
+# Emails & paths remain streaming
 json_only < "$RAW_STRINGS" | jq -r '.str? // empty' \
   | grep '@' | grep -E '[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}' | sort -u > "$WORDLIST_DIR/emails.txt" || true
 json_only < "$RAW_STRINGS" | jq -r '.str? // empty' \
   | grep -E '^/' | grep -v '^//' | sort -u > "$WORDLIST_DIR/paths.txt" || true
 
 echo -e "${YELLOW}[*] Processing secrets...${NC}"
+
+# Existing secrets summaries (slurp where grouping/arrays needed)
 json_only < "$RAW_SECRETS" \
   | jq -s 'group_by(.kind) | map({type: .[0].kind, count: length, samples: [.[0:3][]]})' > "$OUTPUT_DIR/secrets-by-type.json" || true
 json_only < "$RAW_SECRETS" \
   | jq -s 'map(select(.confidence == "high"))' > "$OUTPUT_DIR/secrets-high-confidence.json" || true
 json_only < "$RAW_SECRETS" \
   | jq -r '.value? // empty' | sed '/^$/d' | sort -u > "$WORDLIST_DIR/secret-values.txt" || true
+
+# Secrets report: files where each secret appears (triage)
+json_only < "$RAW_SECRETS" \
+  | jq -s '
+      group_by(.value)
+      | map({
+          value: (.[0].value),
+          kind: (.[0].kind // "unknown"),
+          confidence: (.[0].confidence // "unknown"),
+          files: (map(.filename) | unique | sort),
+          count: length
+        })
+      | sort_by(.count) | reverse
+    ' > "$OUTPUT_DIR/secrets-by-value.json" || true
 
 echo -e "${YELLOW}[*] Processing comments...${NC}"
 json_only < "$RAW_COMMENTS" \
@@ -259,13 +317,13 @@ json_only < "$RAW_COMMENTS" \
   | jq -r '.match? // empty' | grep -iE 'todo|fixme|hack|bug|vulnerable|security|password|token' | sort -u > "$WORDLIST_DIR/comments-interesting.txt" || true
 
 # -------------------------
-# Cleanup (silent)
+# Cleanup (silent) — (9) keep {} and []
 # -------------------------
 echo -e "${YELLOW}[*] Cleaning up...${NC}"
+is_empty_json() { tr -d " \t\r\n" < "$1" 2>/dev/null | grep -qE '^(\[\]|{})$'; }
 for dir in "$OUTPUT_DIR" "$WORDLIST_DIR" "$RAW_DIR"; do
   find "$dir" -type f 2>/dev/null | while read -r f; do
-    content="$(tr -d ' \t\r\n' < "$f" 2>/dev/null)"
-    if [[ ! -s "$f" || "$content" == "[]" ]]; then
+    if [[ ! -s "$f" ]] || is_empty_json "$f"; then
       rm -f "$f"
     fi
   done
