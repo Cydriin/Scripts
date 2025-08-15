@@ -1,14 +1,5 @@
 #!/bin/bash
-# jsluice recon extractor (JavaScript; also includes TS/JSX)
-# - Overall progress (no per-type)
-# - Per-file caching of raw outputs under jsluice-output/raw
-# - --no-color (CI) and --force-reextract flags
-# - Robust to empty sets and noisy inputs
-# - Produces wordlists + strings-interesting.json
 
-# -------------------------
-# Defaults & flag parsing
-# -------------------------
 JS_DIR="."
 OUTPUT_DIR="jsluice-output"
 WORDLIST_DIR="$OUTPUT_DIR/wordlists"
