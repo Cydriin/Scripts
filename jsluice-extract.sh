@@ -161,7 +161,7 @@ echo -e "${YELLOW}[*] Processing strings...${NC}"
 json_only < "$RAW_STRINGS" \
   | jq -r '.str? // empty' | sed '/^$/d' | sort -u > "$WORDLIST_DIR/strings-all.txt" || true
 
-# 2) Per-file breakdown (ascending by unique_count)
+# 2) Per-file breakdown (ascending by unique_strings_count)
 json_only < "$RAW_STRINGS" \
   | jq -s '
     group_by(.filename) 
@@ -170,12 +170,12 @@ json_only < "$RAW_STRINGS" \
         |
         {
           file: .[0].filename,
-          unique_count: ($u | length),
-          total: length,
+          unique_strings_count: ($u | length),
+          total_strings: length,
           strings: $u
         }
       )
-    | sort_by(.unique_count)
+    | sort_by(.unique_strings_count)
   ' > "$OUTPUT_DIR/strings-unique-to-file.json" || true
 
 # 3) Strings found in multiple files — per-file format (ascending by shared_count)
@@ -196,13 +196,12 @@ json_only < "$RAW_STRINGS" \
         |
         {
           file: .[0].filename,
-          unique_count: ($u | length),
-          total: length,
-          shared_count: (
+          shared_strings_count: (
             $u
             | map(select( . as $s | ($shared_set | index($s)) != null))
             | length
           ),
+          total_strings: length,
           shared_strings: (
             $u
             | map(select( . as $s | ($shared_set | index($s)) != null))
@@ -210,8 +209,8 @@ json_only < "$RAW_STRINGS" \
           )
         }
       )
-    | sort_by(.shared_count)
-  ' > "$OUTPUT_DIR/strings-found-in-multiple-files.json" || true
+    | sort_by(.shared_strings_count)
+  ' > "$OUTPUT_DIR/strings-shared-in-files.json" || true
 
 # 4) Consolidated “interesting” view
 json_only < "$RAW_STRINGS" \
